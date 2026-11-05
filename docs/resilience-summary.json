@@ -1,0 +1,17 @@
+{
+  "executedOn": "2026-11-04",
+  "environment": "Docker Compose local: OS + Billing + Production + PostgreSQL 16 + DynamoDB/SQS LocalStack",
+  "suite": "oficina-api/test/phase4/resilience.cjs",
+  "command": "ALLOW_SERVICE_RESTART=true node --test --test-reporter=spec test/phase4/resilience.cjs",
+  "passed": 4,
+  "failed": 0,
+  "skipped": 0,
+  "durationMs": 95537.6756,
+  "scenarios": [
+    "Inventory facade stores catalog and additive stock exclusively in Production",
+    "Duplicate SQS commands/events preserve one reservation and one execution-release history entry",
+    "Insufficient stock compensates; replenishment retries the same OS with a new Saga; old messages cannot reopen or cancel it",
+    "OS is stopped; approval remains queued; restarting OS resumes the Saga without losing state or reserving twice"
+  ],
+  "awsDeploymentExecuted": false
+}

@@ -1,0 +1,50 @@
+{
+  "name": "oficina-production-service",
+  "version": "4.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --require dd-trace/init dist/main.js",
+    "start:dev": "ts-node src/main.ts",
+    "test": "jest --runInBand",
+    "test:cov": "jest --runInBand --coverage",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "docs": "node scripts/export-openapi.cjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1123.0",
+    "@aws-sdk/lib-dynamodb": "^3.1123.0",
+    "@aws-sdk/client-sqs": "^3.1123.0",
+    "@nestjs/common": "^11.2.3",
+    "@nestjs/core": "^11.2.3",
+    "@nestjs/platform-express": "^11.2.3",
+    "@nestjs/swagger": "^11.2.6",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.4",
+    "dd-trace": "^6.13.0",
+    "jsonwebtoken": "^9.0.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "^11.2.3",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^30.0.0",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^22.10.7",
+    "@types/supertest": "^6.0.2",
+    "jest": "^30.0.0",
+    "supertest": "^7.0.0",
+    "ts-jest": "^29.2.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {"^.+\\.ts$": ["ts-jest", {"tsconfig": "tsconfig.test.json"}]},
+    "collectCoverageFrom": ["src/**/*.ts", "!src/main.ts", "!src/app.module.ts", "!src/model.ts", "!src/dto.ts"],
+    "coverageDirectory": "coverage",
+    "coverageThreshold": {"global": {"statements": 80, "branches": 80, "functions": 80, "lines": 80}}
+  }
+}

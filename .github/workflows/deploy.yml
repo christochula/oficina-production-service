@@ -1,0 +1,65 @@
+name: Production deploy
+on:
+  workflow_run:
+    workflows: [Production CI]
+    branches: [main]
+    types: [completed]
+permissions:
+  contents: read
+concurrency:
+  group: production-homolog
+  cancel-in-progress: false
+env:
+  AWS_REGION: us-east-1
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    environment: homolog
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: '${{ github.event.workflow_run.head_sha }}'}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with: {terraform_version: 1.16.0}
+      - name: Provision service resources
+        working-directory: infra
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+        run: |
+          terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=oficina/production/terraform.tfstate" -backend-config="region=${AWS_REGION}" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
+          terraform apply -auto-approve -input=false -lock-timeout=5m
+          echo "IMAGE_REPOSITORY=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_ENV"
+          echo "TABLE_NAME=$(terraform output -raw table_name)" >> "$GITHUB_ENV"
+          echo "INBOX_URL=$(terraform output -raw inbox_queue_url)" >> "$GITHUB_ENV"
+          echo "APP_SECRET=$(terraform output -raw application_secret_id)" >> "$GITHUB_ENV"
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push exact tested revision
+        env:
+          REVISION: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          docker build -t "${IMAGE_REPOSITORY}:${REVISION}" .
+          docker push "${IMAGE_REPOSITORY}:${REVISION}"
+      - uses: azure/setup-helm@v4.3.0
+        with: {version: v3.17.3}
+      - name: Deploy and verify rollout
+        env:
+          CLUSTER: ${{ vars.EKS_CLUSTER_NAME }}
+          OS_QUEUE_URL: ${{ vars.OS_QUEUE_URL }}
+          REVISION: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig --name "$CLUSTER"
+          kubectl create namespace oficina-fase4 --dry-run=client -o yaml | kubectl apply -f -
+          secret_file="$(mktemp)"
+          trap 'rm -f "$secret_file"' EXIT
+          aws secretsmanager get-secret-value --secret-id "$APP_SECRET" --query SecretString --output text | jq -er 'to_entries[] | "\(.key)=\(.value)"' > "$secret_file"
+          kubectl -n oficina-fase4 create secret generic production-secrets --from-env-file="$secret_file" --from-literal=AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" --from-literal=AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" --from-literal=AWS_SESSION_TOKEN="$AWS_SESSION_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
+          helm upgrade --install oficina-production-service ./helm --namespace oficina-fase4 --atomic --wait --timeout 5m --set image.repository="$IMAGE_REPOSITORY" --set image.tag="$REVISION" --set env.DYNAMODB_TABLE_NAME="$TABLE_NAME" --set env.INBOX_QUEUE_URL="$INBOX_URL" --set env.OS_QUEUE_URL="$OS_QUEUE_URL"
+          kubectl -n oficina-fase4 rollout restart deployment/oficina-production-service
+          kubectl -n oficina-fase4 rollout status deployment/oficina-production-service --timeout=180s

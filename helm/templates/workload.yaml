@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {app: {{ .Release.Name }}}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+        tags.datadoghq.com/service: oficina-production-service
+        tags.datadoghq.com/env: {{ .Values.env.DD_ENV | quote }}
+        tags.datadoghq.com/version: {{ .Values.image.tag | quote }}
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext: {runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000}
+      containers:
+        - name: production
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports: [{containerPort: 3002}]
+          envFrom:
+            - secretRef: {name: {{ .Values.secretName }}}
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: DD_VERSION
+              value: {{ .Values.image.tag | quote }}
+            - name: DD_AGENT_HOST
+              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
+          resources: {{ toYaml .Values.resources | nindent 12 }}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          readinessProbe:
+            httpGet: {path: /api/v1/production/health, port: 3002}
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: {path: /api/health/live, port: 3002}
+            initialDelaySeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  type: {{ .Values.service.type }}
+  selector: {app: {{ .Release.Name }}}
+  ports: [{port: {{ .Values.service.port }}, targetPort: 3002}]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ .Release.Name }}}
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 70}

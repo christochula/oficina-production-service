@@ -1,0 +1,6 @@
+apiVersion: v2
+name: oficina-production-service
+description: Production e estoque com banco DynamoDB exclusivo
+type: application
+version: 4.0.0
+appVersion: "4.0.0"

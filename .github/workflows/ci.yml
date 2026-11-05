@@ -1,0 +1,37 @@
+name: Production CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  quality:
+    name: Build tests quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22, cache: npm}
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm run test:cov
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with: {name: production-coverage, path: coverage}
+      - uses: SonarSource/sonarqube-scan-action@v6
+        with:
+          args: >-
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY || 'christochula_oficina-production-service' }}
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION || 'christochula' }}
+            -Dsonar.host.url=https://sonarcloud.io
+            -Dsonar.qualitygate.wait=true
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      - run: docker build -t production:${{ github.sha }} .
+      - uses: hashicorp/setup-terraform@v3
+        with: {terraform_version: 1.16.0}
+      - run: terraform -chdir=infra init -backend=false
+      - run: terraform -chdir=infra fmt -check
+      - run: terraform -chdir=infra validate

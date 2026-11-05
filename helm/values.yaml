@@ -1,0 +1,21 @@
+replicaCount: 2
+image:
+  repository: oficina-production-service
+  tag: local
+service:
+  type: LoadBalancer
+  port: 3002
+env:
+  PORT: "3002"
+  AWS_REGION: us-east-1
+  DYNAMODB_TABLE_NAME: oficina-homolog-production
+  INBOX_QUEUE_URL: ""
+  OS_QUEUE_URL: ""
+  DD_ENV: homolog
+  DD_SERVICE: oficina-production-service
+  DD_LOGS_INJECTION: "true"
+  ENABLE_DEMO_FAILURES: "false"
+secretName: production-secrets
+resources:
+  requests: {cpu: 100m, memory: 160Mi}
+  limits: {cpu: 500m, memory: 384Mi}

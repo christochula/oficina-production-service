@@ -1,0 +1,842 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/api/v1/production/orders": {
+      "get": {
+        "operationId": "ProductionController_list",
+        "parameters": [
+          {
+            "name": "filialId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Production"
+        ]
+      }
+    },
+    "/api/v1/production/orders/{osId}": {
+      "get": {
+        "operationId": "ProductionController_get",
+        "parameters": [
+          {
+            "name": "osId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Production"
+        ]
+      }
+    },
+    "/api/v1/production/orders/{osId}/assign": {
+      "post": {
+        "operationId": "ProductionController_assign",
+        "parameters": [
+          {
+            "name": "osId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Production"
+        ]
+      }
+    },
+    "/api/v1/production/orders/{osId}/diagnosis": {
+      "post": {
+        "operationId": "ProductionController_diagnosis",
+        "parameters": [
+          {
+            "name": "osId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiagnosisDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Production"
+        ]
+      }
+    },
+    "/api/v1/production/orders/{osId}/start": {
+      "post": {
+        "operationId": "ProductionController_start",
+        "parameters": [
+          {
+            "name": "osId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Production"
+        ]
+      }
+    },
+    "/api/v1/production/orders/{osId}/consume": {
+      "post": {
+        "operationId": "ProductionController_consume",
+        "parameters": [
+          {
+            "name": "osId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsumeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Production"
+        ]
+      }
+    },
+    "/api/v1/production/orders/{osId}/complete": {
+      "post": {
+        "operationId": "ProductionController_complete",
+        "parameters": [
+          {
+            "name": "osId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Production"
+        ]
+      }
+    },
+    "/api/v1/production/stock/{pecaId}": {
+      "put": {
+        "operationId": "ProductionController_stock",
+        "parameters": [
+          {
+            "name": "pecaId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StockDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Production"
+        ]
+      }
+    },
+    "/api/v1/production/internal/orders": {
+      "post": {
+        "operationId": "InternalController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateOrderDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "internal-token": []
+          }
+        ],
+        "tags": [
+          "Internal"
+        ]
+      }
+    },
+    "/api/v1/production/internal/orders/{osId}": {
+      "get": {
+        "operationId": "InternalController_get",
+        "parameters": [
+          {
+            "name": "osId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "internal-token": []
+          }
+        ],
+        "tags": [
+          "Internal"
+        ]
+      }
+    },
+    "/api/health": {
+      "get": {
+        "operationId": "HealthController_health[0]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/api/v1/production/health": {
+      "get": {
+        "operationId": "HealthController_health[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/api/health/live": {
+      "get": {
+        "operationId": "HealthController_live[0]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/api/v1/production/health/live": {
+      "get": {
+        "operationId": "HealthController_live[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/api/health/ready": {
+      "get": {
+        "operationId": "HealthController_ready[0]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/api/v1/production/health/ready": {
+      "get": {
+        "operationId": "HealthController_ready[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/api/v1/production/inventory": {
+      "get": {
+        "operationId": "InventoryController_list",
+        "parameters": [
+          {
+            "name": "filialId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pagina",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "porPagina",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Inventory"
+        ]
+      },
+      "post": {
+        "operationId": "InventoryController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePieceDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Inventory"
+        ]
+      }
+    },
+    "/api/v1/production/inventory/{id}": {
+      "get": {
+        "operationId": "InventoryController_get",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filialId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Inventory"
+        ]
+      },
+      "patch": {
+        "operationId": "InventoryController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filialId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePieceDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Inventory"
+        ]
+      }
+    },
+    "/api/v1/production/inventory/{id}/entrada": {
+      "patch": {
+        "operationId": "InventoryController_entry",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filialId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EntryDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Inventory"
+        ]
+      }
+    },
+    "/api/v1/production/inventory/{id}/ativar": {
+      "patch": {
+        "operationId": "InventoryController_activate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filialId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Inventory"
+        ]
+      }
+    },
+    "/api/v1/production/inventory/{id}/desativar": {
+      "patch": {
+        "operationId": "InventoryController_deactivate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filialId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "Inventory"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "Oficina Production Service",
+    "description": "",
+    "version": "4.0.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      },
+      "internal-token": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Internal-Token"
+      }
+    },
+    "schemas": {
+      "AssignDto": {
+        "type": "object",
+        "properties": {
+          "mecanicoId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mecanicoId"
+        ]
+      },
+      "DiagnosisDto": {
+        "type": "object",
+        "properties": {
+          "descricao": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "descricao"
+        ]
+      },
+      "ConsumeDto": {
+        "type": "object",
+        "properties": {
+          "pecaId": {
+            "type": "string"
+          },
+          "quantidade": {
+            "type": "number",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "pecaId",
+          "quantidade"
+        ]
+      },
+      "StockDto": {
+        "type": "object",
+        "properties": {
+          "filialId": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Quantidade disponível, excluindo reservas existentes"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "filialId",
+          "quantity"
+        ]
+      },
+      "CreateOrderDto": {
+        "type": "object",
+        "properties": {
+          "osId": {
+            "type": "string"
+          },
+          "filialId": {
+            "type": "string"
+          },
+          "clienteId": {
+            "type": "string"
+          },
+          "mecanicoId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "osId",
+          "filialId",
+          "clienteId"
+        ]
+      },
+      "CreatePieceDto": {
+        "type": "object",
+        "properties": {
+          "codigo": {
+            "type": "string"
+          },
+          "nome": {
+            "type": "string"
+          },
+          "precoVenda": {
+            "type": "number"
+          },
+          "descricao": {
+            "type": "string"
+          },
+          "filialId": {
+            "type": "string"
+          },
+          "quantidadeInicial": {
+            "type": "number"
+          },
+          "quantidadeMinima": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "codigo",
+          "nome",
+          "precoVenda"
+        ]
+      },
+      "UpdatePieceDto": {
+        "type": "object",
+        "properties": {
+          "nome": {
+            "type": "string"
+          },
+          "precoVenda": {
+            "type": "number"
+          },
+          "descricao": {
+            "type": "object"
+          },
+          "quantidadeMinima": {
+            "type": "number"
+          }
+        }
+      },
+      "EntryDto": {
+        "type": "object",
+        "properties": {
+          "quantidade": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "quantidade"
+        ]
+      }
+    }
+  }
+}
