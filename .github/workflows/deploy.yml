@@ -41,7 +41,7 @@ jobs:
       - uses: aws-actions/amazon-ecr-login@v2
       - name: Build and push exact tested revision
         env:
-          REVISION: ${{ github.event.workflow_run.head_sha }}
+          REVISION: ${{ github.event.workflow_run.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           docker build -t "${IMAGE_REPOSITORY}:${REVISION}" .
           docker push "${IMAGE_REPOSITORY}:${REVISION}"
@@ -51,7 +51,7 @@ jobs:
         env:
           CLUSTER: ${{ vars.EKS_CLUSTER_NAME }}
           OS_QUEUE_URL: ${{ vars.OS_QUEUE_URL }}
-          REVISION: ${{ github.event.workflow_run.head_sha }}
+          REVISION: ${{ github.event.workflow_run.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           aws eks update-kubeconfig --name "$CLUSTER"
