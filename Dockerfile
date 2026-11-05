@@ -7,7 +7,7 @@ COPY src ./src
 RUN npm run build && npm prune --omit=dev --ignore-scripts
 
 FROM node:22-alpine
-ENV NODE_ENV=production PORT=3002 DD_SERVICE=oficina-production-service DD_LOGS_INJECTION=true
+ENV NODE_ENV=production PORT=3002 DD_SERVICE=oficina-production-service DD_LOGS_INJECTION=true DD_TRACE_PROPAGATION_STYLE_INJECT=datadog,tracecontext DD_TRACE_PROPAGATION_STYLE_EXTRACT=datadog,tracecontext
 WORKDIR /app
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist

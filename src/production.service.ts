@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { randomUUID } from 'crypto';
 import { Commit, Conflict, Envelope, InsufficientStock, Order, Part, StockChange, Store } from './model';
 import { Actor, ownership } from './auth';
+import { activeTraceparent } from './tracing';
 
 @Injectable()
 export class ProductionService {
@@ -24,10 +25,11 @@ export class ProductionService {
     return order;
   }
   private event(order: Pick<Order, 'osId' | 'filialId' | 'sagaId'>, type: string, payload: object, origin?: Envelope): Envelope {
+    const traceparent=activeTraceparent(origin?.traceparent);
     return {
       messageId: randomUUID(), type, version: 1, sagaId: origin?.sagaId || order.sagaId || order.osId,
       osId: order.osId, filialId: order.filialId, correlationId: origin?.correlationId || order.osId,
-      occurredAt: new Date().toISOString(), ...(origin?.traceparent ? { traceparent: origin.traceparent } : {}), payload,
+      occurredAt: new Date().toISOString(), ...(traceparent ? { traceparent } : {}), payload,
     };
   }
   private async update(osId: string, fn: (order: Order) => { type: string; payload: object; stocks?: StockChange[] }, actor?: Actor): Promise<Order> {

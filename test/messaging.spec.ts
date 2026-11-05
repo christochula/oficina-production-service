@@ -1,4 +1,4 @@
-jest.mock('dd-trace', () => ({ __esModule:true, default:{ extract:jest.fn(()=>({trace:'parent'})), trace:jest.fn((_name,_options,fn)=>fn()) } }));
+jest.mock('dd-trace', () => ({ __esModule:true, default:{ scope:()=>({active:()=>null}), inject:jest.fn(), extract:jest.fn(()=>({trace:'parent'})), trace:jest.fn((_name,_options,fn)=>fn()) } }));
 import { Logger } from '@nestjs/common';
 import { Messaging, parseEnvelope } from '../src/messaging';
 import { ProductionService } from '../src/production.service';
