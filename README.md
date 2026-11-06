@@ -65,7 +65,7 @@ docker build -t oficina-production-service:local .
 
 ## CI/CD e Kubernetes
 
-CI de PR e push em qualquer branch executa os checks `Quality`, `Integration`, `Container` e `Sonar`: typecheck, testes com gates >=80% em statements/branches/functions/lines, integração DynamoDB, build, upload de cobertura, **SonarCloud com quality gate bloqueante**, Docker build e Terraform fmt/validate. Configurar Repository Secret `SONAR_TOKEN` e Repository Variables `SONAR_PROJECT_KEY`/`SONAR_ORGANIZATION`; ausência de configuração falha o CI. Deploy exige os quatro checks bem-sucedidos em uma única execução CI de push/dispatch do mesmo repositório, branch e SHA, ainda HEAD dessa branch.
+O workflow `Production CI` de PR e push em qualquer branch concentra no check `Build tests quality`: typecheck, testes com gates >=80% em statements/branches/functions/lines, build, upload de cobertura, **SonarCloud com quality gate bloqueante**, Docker build e Terraform fmt/validate. Configurar Repository Secret `SONAR_TOKEN` e Repository Variables `SONAR_PROJECT_KEY`/`SONAR_ORGANIZATION`; ausência de configuração falha o CI. Deploy exige esse check completo bem-sucedido em uma execução CI de push/dispatch do mesmo repositório, branch e SHA, ainda HEAD dessa branch. A integração real com DynamoDB/SQS entre os três serviços também é exercitada pelo BDD do OS Service.
 
 O workflow `Production deploy` separa operações `plan`, `apply` e `deploy`, todas via GitHub Actions. Terraform usa state exclusivo `oficina/production/terraform.tfstate` e provisiona DynamoDB PAY_PER_REQUEST com PITR/criptografia, SQS/DLQ, ECR e referência do secret próprios. `apply` exige um plano previamente revisado, sem deleção/substituição, texto idêntico e fingerprint semântico igual. `deploy` somente lê outputs existentes, publica imagem imutável no ECR, carrega o secret de aplicação, aplica Helm atomicamente e verifica rollout. Namespace exclusivo **`oficina-fase4`**, preservando o legado. Plataforma EKS/metrics-server/Datadog vem do repo compartilhado. Helm contém Deployment, Service, probes, requests/limits e HPA 2–4 réplicas. Procedimento, inputs e fallback por tags estão em [deploy por GitHub Actions](docs/deploy-actions.md).
 
@@ -75,7 +75,7 @@ No Environment GitHub `homolog`, configurar Secrets `AWS_ACCESS_KEY_ID`, `AWS_SE
 
 AWS Academy: confirmar permissões/quota/crédito para DynamoDB, SQS, ECR e EKS antes de provisionar. O deploy injeta as credenciais temporárias da sessão AWS do Environment GitHub `homolog` no Kubernetes Secret sem imprimir valores e reinicia o Deployment para carregá-las; renovar secrets e executar deploy novamente após expiração da sessão. Não depende de acesso IMDS dos pods ou criação de IAM roles. Permissões mínimas necessárias incluem DynamoDB GetItem/Query/Scan/UpdateItem/TransactWriteItems e SQS Receive/Delete/Send. Fora do Learner Lab, substituir credenciais de sessão por identidade de workload com escopo por serviço.
 
-`.github/settings.yml` registra a intenção de proteção de `main`; **não aplica regras automaticamente**. Antes da entrega, aplicar proteção real: PR obrigatório, uma aprovação, checks `Quality`, `Integration`, `Container` e `Sonar` obrigatórios, sem force-push/deleção e administradores incluídos; guardar evidência da configuração no GitHub.
+`.github/settings.yml` registra a intenção de proteção de `main`; **não aplica regras automaticamente**. A proteção deve exigir PR, uma aprovação e o check `Build tests quality` obrigatório, sem force-push/deleção e com administradores incluídos; conferir e guardar evidência da configuração no GitHub.
 
 ## Observabilidade e demonstração
 
@@ -89,7 +89,7 @@ Suíte real adicional executada com os três apps e bancos/filas locais: **4/4 c
 
 Snapshot de 06/11/2026, fonte implantada `ac3d2ee`:
 
-- [CI aprovado](https://github.com/christochula/oficina-production-service/actions/runs/42214602177): checks `Quality`, `Integration`, `Container` e `Sonar`, incluindo quality gate obrigatório.
+- [CI aprovado](https://github.com/christochula/oficina-production-service/actions/runs/42214602177): check `Build tests quality`, incluindo testes, build, quality gate Sonar obrigatório, imagem Docker e validação Terraform.
 - [SonarCloud](https://sonarcloud.io/dashboard?id=christochula-oficina_oficina-production-service): cobertura **99,3%**, linhas 100,0% e branches 98,5%; quality gate aprovado. São métricas Sonar, distintas do resumo Jest local.
 - [Relatório de cobertura](https://github.com/christochula/oficina-production-service/actions/runs/42214602177/artifacts/13500604823): artifact `production-coverage` da mesma execução CI.
 - [Deploy por GitHub Actions aprovado](https://github.com/christochula/oficina-production-service/actions/runs/42225399746): imagem imutável do SHA `ac3d2ee16f08403c0d734966ce50613442f2b633`, duas réplicas prontas no EKS e health público HTTP200 após o rollout.
