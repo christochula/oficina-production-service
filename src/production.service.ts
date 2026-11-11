@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { isUUID } from 'class-validator';
 import { Commit, Conflict, Envelope, InsufficientStock, Order, Part, StockChange, Store } from './model';
 import { Actor, ownership } from './auth';
 import { activeTraceparent } from './tracing';
@@ -108,7 +109,11 @@ export class ProductionService {
     return [...parts.values()];
   }
   async command(message: Envelope): Promise<void> {
-    const step = `${message.osId}#${message.sagaId}#${message.type}`;
+    const reconciliation = message.type === 'ReconcileExecutionReservation';
+    const reconciliationId = message.payload?.reconciliationId;
+    if (reconciliation && !isUUID(reconciliationId)) throw new BadRequestException('Valid reconciliationId required');
+    const reconciliationPayload = reconciliation ? { reconciliationId } : {};
+    const step = `${message.osId}#${message.sagaId}#${message.type}${reconciliation ? `#${reconciliationId}` : ''}`;
     for (let attempt = 0; attempt < 5; attempt++) {
       if (await this.store.exists(`INBOX#${message.messageId}`) || await this.store.exists(`STEP#${step}`)) return;
       let change: Commit = { inbox: message.messageId, step, events: [] };
@@ -116,17 +121,24 @@ export class ProductionService {
         const current = await this.store.getOrder(message.osId);
         const order = current ? structuredClone(current) : undefined;
         const cancelled = await this.store.exists(`CANCELLED#${message.sagaId}`);
-        if (message.type === 'CancelExecutionReservation') {
+        if (message.type === 'CancelExecutionReservation' || reconciliation) {
           if (order && order.filialId !== message.filialId) throw new BadRequestException('Branch mismatch');
           if (order && ['IN_PROGRESS', 'COMPLETED'].includes(order.status)) throw new BadRequestException('Physical work cannot be compensated');
-          if (order?.sagaId && order.sagaId !== message.sagaId) throw new BadRequestException('Saga mismatch');
+          if (order?.sagaId && order.sagaId !== message.sagaId) {
+            // A failed retry never owned a reservation. A previously compensated
+            // aggregate can acknowledge its cancellation without releasing stock twice.
+            const previousAttemptCancelled = order.status === 'CANCELLED'
+              && order.parts.every(part => part.consumedQuantity === 0)
+              && await this.store.exists(`CANCELLED#${order.sagaId}`);
+            if (!previousAttemptCancelled) throw new BadRequestException('Saga mismatch');
+          }
           change.cancelSaga = message.sagaId;
           if (order) {
             if (['RESERVED', 'READY'].includes(order.status)) change.stocks = order.parts.map(part => ({ pecaId: part.pecaId, filialId: order.filialId, quantity: part.quantity - part.consumedQuantity, action: 'release' }));
             order.status = 'CANCELLED'; order.sagaId = message.sagaId;
             change.order = { ...order, revision: order.revision + 1 }; change.expectedRevision = order.revision;
           }
-          change.events.push(this.event(message, 'ExecutionCancelled', {}, message));
+          change.events.push(this.event(message, 'ExecutionCancelled', reconciliationPayload, message));
         } else {
           if (cancelled) throw new BadRequestException('Saga already cancelled');
           if (!order) throw new BadRequestException('Production order not found');
@@ -151,7 +163,7 @@ export class ProductionService {
       } catch (error) {
         if (error instanceof Conflict) continue;
         if (!(error instanceof BadRequestException || error instanceof InsufficientStock)) throw error;
-        change = { inbox: message.messageId, step, events: [this.event(message, 'CommandFailed', { commandType: message.type, reason: error.message }, message)] };
+        change = { inbox: message.messageId, step, events: [this.event(message, 'CommandFailed', { commandType: message.type, reason: error.message, ...reconciliationPayload }, message)] };
         try { await this.store.commit(change); return; }
         catch (failure) { if (!(failure instanceof Conflict)) throw failure; }
       }
