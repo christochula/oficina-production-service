@@ -61,7 +61,7 @@ npm run docs
 docker build -t oficina-production-service:local .
 ```
 
-**Evidência local:** 63 testes aprovados; cobertura global statements/lines/functions 100%, branches 98,48% (7 suítes: domínio, HTTP/JWT, inventário, adaptador DynamoDB, SQS, telemetria e propagação W3C). Resumo medido versionado em [`docs/coverage-summary.json`](docs/coverage-summary.json). O relatório real é gerado em `coverage/lcov-report/index.html` e publicado como artifact `production-coverage` em cada CI. A cobertura inclui controllers, guards, mensageria e persistência; exclui somente bootstrap/wiring, interfaces e DTOs declarativos. Não inclui execução na AWS real; o fluxo entre os três serviços é validado separadamente no BDD integrado com PostgreSQL, DynamoDB e SQS LocalStack.
+**Evidência local anterior (registro histórico):** 63 testes aprovados; cobertura global statements/lines/functions 100%, branches 98,48% (7 suítes: domínio, HTTP/JWT, inventário, adaptador DynamoDB, SQS, telemetria e propagação W3C). Resumo medido versionado em [`docs/coverage-summary.json`](docs/coverage-summary.json). O relatório real é gerado em `coverage/lcov-report/index.html` e publicado como artifact `production-coverage` em cada CI. A cobertura inclui controllers, guards, mensageria e persistência; exclui somente bootstrap/wiring, interfaces e DTOs declarativos. Não inclui execução na AWS real; o fluxo entre os três serviços é validado separadamente no BDD integrado com PostgreSQL, DynamoDB e SQS LocalStack.
 
 ## CI/CD e Kubernetes
 
@@ -86,6 +86,19 @@ Falha demonstrada na homologação: orçamento com peça sem estoque. Production
 Suíte real adicional executada com os três apps e bancos/filas locais: **4/4 cenários de resiliência aprovados**, incluindo falta de estoque, reposição/retry da mesma OS com nova Saga, duplicatas/mensagens tardias e restart do OS enquanto a aprovação estava enfileirada. Evidência em [`docs/resilience-summary.json`](docs/resilience-summary.json). Essa validação não representa deploy AWS nem integração com uma conta real do Mercado Pago.
 
 ## Evidências publicadas de CI, cobertura e deploy
+
+### Snapshot de 10/11/2026, 21h45 (America/Sao_Paulo)
+
+A **OS #2**, `os06a521bf-0d80-49b5-8dd2-1a1c9c961588`, terminou **ENTREGUE**, com pagamento de **R$175,00** após o reparo. A falta de uma peça em estoque levou à compensação e à preparação `COMPENSATED`. Depois da reposição, o retry usou nova Saga e a preparação chegou a `COMPLETED`; o mecânico iniciou/concluiu o reparo, o Checkout Pro TEST foi aprovado e o OS confirmou a entrega.
+
+- [CI aprovado](https://github.com/christochula/oficina-production-service/actions/runs/42928175814): `Build tests quality` bem-sucedido, incluindo quality gate Sonar, para o SHA `7daa58af1273d952161dc74ec73fe9e20ac8eb31`.
+- [Deploy aprovado](https://github.com/christochula/oficina-production-service/actions/runs/42928627925): mesma revisão, imagem imutável, duas réplicas atualizadas/prontas e health HTTP200.
+- Cobertura Jest desse código: **66 testes**, statements **100%**, branches **98,53%**, funções **100%**, linhas **100%**. O CI publica o artifact `production-coverage`; esses percentuais são do Jest, não do painel Sonar.
+- Na validação de pagamento desse fluxo, a API canônica do provedor confirmou a referência e **175 BRL**, com contas de teste conferidas. O campo **`live_mode=true`** foi preservado como observado. O Billing registrou `billing.payment.checked` com `source=webhook` em **11/11/2026 às 00:43:09.702Z**, e o OS consumiu `PaymentConfirmed` antes da entrega. Identificadores de pagamento e dados de acesso ficam fora deste README.
+- Datadog foi validado na UI/API: latência HTTP dos três serviços, seis séries de filas e sete séries de Saga; **p95 com séries dos três serviços**. A amostra observada inclui um trace com OS, Billing e Production, além dos logs correlacionados das etapas da Saga. [Dashboard de homologação](https://app.datadoghq.com/dashboard/u6t-x9c-awx/oficina--operao-e-observabilidade--homolog).
+- [Guia para gravar a demonstração](https://github.com/christochula/oficina-api/blob/feature/phase4-distributed/docs/entrega/pronto-para-gravar.md), mantido no repositório OS.
+
+### Histórico de 06/11/2026 — OS #1
 
 Snapshot de 06/11/2026, fonte implantada `ac3d2ee`:
 
