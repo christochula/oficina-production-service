@@ -1,6 +1,6 @@
 jest.mock('dd-trace',()=>{
   const scope={active:jest.fn()};
-  return {__esModule:true,default:{scope:()=>scope,inject:jest.fn()}};
+  return {__esModule:true,default:{scope:()=>scope,inject:jest.fn(),extract:jest.fn(()=>({parent:'durable'})),trace:jest.fn((_name,_options,run)=>run())}};
 });
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -11,7 +11,7 @@ import { JwtGuard } from '../src/auth';
 import { Envelope, Store } from '../src/model';
 import { ProductionController } from '../src/production.controller';
 import { ProductionService } from '../src/production.service';
-import { activeTraceparent } from '../src/tracing';
+import { activeTraceparent, traceOutbox, withTraceIds } from '../src/tracing';
 import { MemoryStore } from './memory.store';
 
 describe('W3C context at durable messaging boundaries',()=>{
@@ -49,5 +49,22 @@ describe('W3C context at durable messaging boundaries',()=>{
   it('keeps business messages available when telemetry injection throws',()=>{
     (tracer.inject as jest.Mock).mockImplementation(()=>{throw new Error('tracer not ready');});
     expect(activeTraceparent(incoming)).toBe(incoming);
+  });
+  it('restores the transaction parent when delayed publishing and preserves event identity',async()=>{
+    const event:Envelope={messageId:'event',type:'ExecutionCancelled',version:1,osId:'order',filialId:'f1',sagaId:'saga',correlationId:'corr',occurredAt:new Date().toISOString(),traceparent:incoming,payload:{}};
+    const send=jest.fn().mockResolvedValue(undefined);
+    await traceOutbox('production.outbox.publish',event,send);
+    expect(tracer.extract).toHaveBeenCalledWith('http_headers',{traceparent:incoming});
+    expect(tracer.trace).toHaveBeenCalledWith('production.outbox.publish',expect.objectContaining({childOf:{parent:'durable'},resource:'ExecutionCancelled',tags:expect.objectContaining({'span.kind':'producer','saga.id':'saga'})}),expect.any(Function));
+    expect(send).toHaveBeenCalledWith({...event,traceparent:active});expect(event.traceparent).toBe(incoming);
+    (tracer.extract as jest.Mock).mockImplementationOnce(()=>{throw new Error('disabled');});
+    send.mockRejectedValueOnce(new Error('send failed'));
+    await expect(traceOutbox('production.outbox.publish',event,send)).rejects.toThrow('send failed');expect(send).toHaveBeenCalledTimes(2);
+  });
+  it('adds trace IDs to structured command logs and leaves logging usable when tracing fails',()=>{
+    (tracer.inject as jest.Mock).mockImplementation((_span,_format,record)=>{record.dd={trace_id:'123',span_id:'456'};});
+    expect(withTraceIds({event:'processed'})).toEqual({event:'processed',dd:{trace_id:'123',span_id:'456'}});
+    (tracer.inject as jest.Mock).mockImplementation(()=>{throw new Error('disabled');});
+    expect(withTraceIds({event:'processed'})).toEqual({event:'processed'});
   });
 });

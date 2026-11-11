@@ -6,11 +6,18 @@ import { finalize, Observable, tap } from 'rxjs';
 export class Metrics implements OnModuleDestroy {
   private socket?: Socket;
   duration(method: string, status: number, durationMs: number): void {
+    if (!Number.isFinite(durationMs)) return;
+    this.emit(`oficina.api.request.duration_ms:${Math.max(0,durationMs)}|d`,[`method:${method.replace(/[^a-zA-Z0-9_.\/-]/g,'_')}`,`status_code:${status}`]);
+  }
+  messageProcessed(failed=false,queue='production-commands'):void {
+    this.emit(`${failed?'oficina.messaging.failed':'oficina.messaging.processed'}:1|c`,[`queue:${queue.replace(/[^a-zA-Z0-9_.-]/g,'_')}`]);
+  }
+  private emit(sample:string,extraTags:string[]):void {
     if (process.env.DD_METRICS_ENABLED === 'false') return;
     const clean=(value:string)=>value.replace(/[^a-zA-Z0-9_.\/-]/g,'_');
     const tags=[`env:${clean(process.env.DD_ENV || 'local')}`,`service:${clean(process.env.DD_SERVICE || 'oficina-production-service')}`,
-      `version:${clean(process.env.DD_VERSION || '4.0.0')}`,`method:${clean(method)}`,`status_code:${status}`];
-    const payload=Buffer.from(`oficina.api.request.duration_ms:${Math.max(0,durationMs)}|d|#${tags.join(',')}`);
+      `version:${clean(process.env.DD_VERSION || '4.0.0')}`,...extraTags];
+    const payload=Buffer.from(`${sample}|#${tags.join(',')}`);
     try {
       if (!this.socket) { this.socket=createSocket('udp4'); this.socket.on('error',()=>{}); }
       this.socket.send(payload,Number(process.env.DD_DOGSTATSD_PORT || 8125),process.env.DD_AGENT_HOST || '127.0.0.1',()=>{});
