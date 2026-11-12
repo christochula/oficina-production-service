@@ -1,4 +1,4 @@
-import { IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import { IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength, Min } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 export class CreateOrderDto {
   @ApiProperty() @IsString() @IsNotEmpty() @MaxLength(100) osId!: string;
@@ -11,6 +11,8 @@ export class DiagnosisDto { @ApiProperty() @IsString() @IsNotEmpty() @MaxLength(
 export class ConsumeDto {
   @ApiProperty() @IsString() @IsNotEmpty() @MaxLength(100) pecaId!: string;
   @ApiProperty({minimum:1}) @IsInt() @Min(1) quantidade!: number;
+  @ApiPropertyOptional({ format: 'uuid', description: 'Reuse the same UUID and payload when retrying a consumption whose response was lost.' })
+  @IsOptional() @IsUUID() operationId?: string;
 }
 export class StockDto {
   @ApiProperty() @IsString() @IsNotEmpty() @MaxLength(100) filialId!: string;

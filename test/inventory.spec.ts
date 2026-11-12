@@ -2,8 +2,8 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import jwt from 'jsonwebtoken';
 import request from 'supertest';
-import { InventoryController, InventoryService, legacyStock } from '../src/inventory';
-import { JwtGuard } from '../src/auth';
+import { InternalInventoryController, InventoryController, InventoryService, legacyStock } from '../src/inventory';
+import { InternalGuard, JwtGuard } from '../src/auth';
 import { Store } from '../src/model';
 import { MemoryStore } from './memory.store';
 describe('Inventory owns catalog, available balance and branch stock',()=>{
@@ -58,5 +58,55 @@ describe('Inventory owns catalog, available balance and branch stock',()=>{
   it('preserves infrastructure errors rather than reporting false successful creation',async()=>{
     jest.spyOn(store,'createCatalog').mockRejectedValueOnce(new Error('network'));
     await api().post(base).set('Authorization',auth()).send({codigo:'NEW',nome:'Peça',precoVenda:1}).expect(500);
+  });
+});
+
+describe('Inventory lookup across pages and authoritative internal identity', () => {
+  let app: INestApplication; let store: MemoryStore;
+  const secret = 'inventory-search-secret-at-least-32-characters';
+  const auth = (role = 'MECANICO') => 'Bearer ' + jwt.sign({ role }, secret, { subject: 'm1', issuer: 'oficina-auth-serverless', audience: 'oficina-api', expiresIn: 3600 });
+  const base = '/api/v1/production/inventory';
+  const api = () => request(app.getHttpServer());
+  beforeAll(async () => {
+    process.env.JWT_SECRET = secret; process.env.AUTH_CLIENT_LOOKUP_TOKEN = secret;
+    store = new MemoryStore();
+    for (let n = 0; n < 34; n++) await store.createCatalog({ pecaId: `p${n}`, filialId: 'sp', codigo: `ARR-${n}`, nome: `Arruela ${n}`, ativo: true, quantity: 10, reserved: 0, used: 0 });
+    for (const filialId of ['sp', 'rj']) await store.createCatalog({ pecaId: `oil-${filialId}`, filialId, codigo: 'OLEO-50', nome: 'Z Filtro de Óleo', descricao: 'Elemento sintético — carcaça azul', precoVenda: 50, ativo: true, quantity: 0, reserved: 0, used: 0 });
+    await store.createCatalog({ pecaId: 'inactive', filialId: 'sp', codigo: 'OLD', nome: 'Z Filtro de Óleo antigo', ativo: false, quantity: 4, reserved: 0, used: 0 });
+    await store.createCatalog({ pecaId: 'legacy', filialId: 'sp', codigo: 'LEGACY', description: 'Peça sem atributo ativo', quantity: 1, reserved: 0, used: 0 });
+    const module = await Test.createTestingModule({ controllers: [InventoryController, InternalInventoryController], providers: [InventoryService, JwtGuard, InternalGuard, { provide: Store, useValue: store }] }).compile();
+    app = module.createNestApplication(); app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true })); await app.init();
+  });
+  afterAll(async () => app.close());
+  it.each(['FILTRO DE OLEO', 'elemento sintetico', 'oleo-50'])('finds %s outside page one before pagination, preserving zero-stock identity', async busca => {
+    const result = await api().get(base).query({ busca, filialId: 'sp', ativo: 'true', porPagina: '1', pagina: '1' }).set('Authorization', auth()).expect(200);
+    expect(result.body).toMatchObject({ data: [{ filialId: 'sp', peca: { id: 'oil-sp', codigo: 'OLEO-50', ativo: true }, quantidadeDisponivel: 0 }], meta: { pagina: 1, porPagina: 1, total: 1, totalPaginas: 1 } });
+  });
+  it('keeps same-code branches distinct and paginates identical labels deterministically', async () => {
+    const first = await api().get(base).query({ busca: 'OLEO-50', ativo: 'true', porPagina: 1 }).set('Authorization', auth()).expect(200);
+    const second = await api().get(base).query({ busca: 'OLEO-50', ativo: 'true', porPagina: 1, pagina: 2 }).set('Authorization', auth()).expect(200);
+    expect(first.body.meta).toMatchObject({ total: 2, totalPaginas: 2 });
+    expect(first.body.data[0].filialId).toBe('rj'); expect(second.body.data[0].filialId).toBe('sp');
+    const again = await api().get(base).query({ busca: 'OLEO-50', ativo: 'true', porPagina: 1 }).set('Authorization', auth()).expect(200);
+    expect(again.body).toEqual(first.body);
+  });
+  it('returns filtered totals for inactive, legacy active and empty results without inventing matches', async () => {
+    expect((await api().get(base).query({ ativo: 'false' }).set('Authorization', auth()).expect(200)).body).toMatchObject({ data: [{ peca: { id: 'inactive', ativo: false } }], meta: { total: 1 } });
+    expect((await api().get(base).query({ busca: 'sem atributo', ativo: 'true' }).set('Authorization', auth()).expect(200)).body.data[0].peca.id).toBe('legacy');
+    expect((await api().get(base).query({ busca: 'Não existe', pagina: 2 }).set('Authorization', auth()).expect(200)).body).toEqual({ data: [], meta: { pagina: 2, porPagina: 20, total: 0, totalPaginas: 0 } });
+    expect((await api().get(base).query({ busca: '   ' }).set('Authorization', auth()).expect(200)).body.meta.total).toBe(38);
+    for (const query of [{ ativo: 'yes' }, { busca: 'x'.repeat(201) }]) await api().get(base).query(query).set('Authorization', auth()).expect(400);
+    await api().get(base + '?busca=a&busca=b').set('Authorization', auth()).expect(400);
+  });
+  it('restricts internal identity lookup to the internal token and explicit branch, without granting consultant stock reads', async () => {
+    const internal = '/api/v1/production/internal/inventory/oil-sp';
+    await api().get(internal).query({ filialId: 'sp' }).set('Authorization', auth('CONSULTOR_TECNICO')).expect(401);
+    await api().get(internal).query({ filialId: 'sp' }).set('X-Internal-Token', 'wrong').expect(401);
+    await api().get(internal).set('X-Internal-Token', secret).expect(400);
+    await api().get(internal).query({ filialId: 'rj' }).set('X-Internal-Token', secret).expect(404);
+    const identity = await api().get(internal).query({ filialId: 'sp' }).set('X-Internal-Token', secret).expect(200);
+    expect(identity.body).toMatchObject({ filialId: 'sp', peca: { id: 'oil-sp', nome: 'Z Filtro de Óleo', codigo: 'OLEO-50', ativo: true } });
+    expect((await api().get('/api/v1/production/internal/inventory/inactive').query({ filialId: 'sp' }).set('X-Internal-Token', secret).expect(200)).body.peca.ativo).toBe(false);
+    await api().get(base).query({ busca: 'oil', ativo: 'true' }).set('Authorization', auth('CONSULTOR_TECNICO')).expect(403);
   });
 });

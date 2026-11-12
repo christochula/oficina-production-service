@@ -137,6 +137,14 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
+      - name: Verify expected AWS account before resource access
+        env:
+          EXPECTED_AWS_ACCOUNT_ID: ${{ vars.EXPECTED_AWS_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          [[ "${EXPECTED_AWS_ACCOUNT_ID:-}" =~ ^[0-9]{12}$ ]] || { echo 'Configure EXPECTED_AWS_ACCOUNT_ID before AWS resource access.' >&2; exit 1; }
+          actual_account="$(aws sts get-caller-identity --query Account --output text)"
+          [[ "$actual_account" == "$EXPECTED_AWS_ACCOUNT_ID" ]] || { echo 'AWS credentials belong to a different account.' >&2; exit 1; }
       - uses: hashicorp/setup-terraform@v3
         with: {terraform_version: 1.16.0}
       - name: Initialize the exclusive service state

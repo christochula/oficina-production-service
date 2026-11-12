@@ -18,12 +18,13 @@ Porta padrão `3002`. Swagger em `/api/docs`, JSON em `/api/docs-json`; contrato
 | --- | --- |
 | `POST /api/v1/production/internal/orders` | `X-Internal-Token`, body `{osId,filialId,clienteId,mecanicoId?}`; criação idempotente sem reset |
 | `GET /api/v1/production/internal/orders/:osId` | `X-Internal-Token`; snapshot para OS |
+| `GET /api/v1/production/internal/inventory/:id?filialId=` | `X-Internal-Token`; identidade/estado da peça na filial explícita, sem ampliar acesso público ao estoque |
 | `GET /api/v1/production/orders?filialId=` | JWT; fila filtrada pela propriedade e opcionalmente filial |
 | `GET /api/v1/production/orders/:osId` | JWT; administrador, mecânico atribuído ou cliente proprietário |
 | `POST /api/v1/production/orders/:osId/assign` | administrador; `{mecanicoId}` |
 | `POST /api/v1/production/orders/:osId/diagnosis` | administrador/mecânico atribuído; `{descricao}` |
 | `POST /api/v1/production/orders/:osId/start` | administrador/mecânico atribuído; exige `READY` |
-| `POST /api/v1/production/orders/:osId/consume` | administrador/mecânico atribuído; `{pecaId,quantidade}`; limitado à reserva desta OS |
+| `POST /api/v1/production/orders/:osId/consume` | administrador/mecânico atribuído; `{pecaId,quantidade,operationId?}`; limitado à reserva desta OS |
 | `POST /api/v1/production/orders/:osId/complete` | administrador/mecânico atribuído; exige consumo de todas as peças reservadas |
 | `PUT /api/v1/production/stock/:pecaId` | administrador; `{filialId,quantity,description?}`; `quantity` é quantidade disponível, preserva reservas/consumo |
 | `GET /api/v1/production/health` | público; readiness consulta DynamoDB |
@@ -31,7 +32,13 @@ Porta padrão `3002`. Swagger em `/api/docs`, JSON em `/api/docs-json`; contrato
 
 JWT compartilhado com auth: assinatura **HS256**, issuer `oficina-auth-serverless`, audience `oficina-api`, `exp`, `sub` e `role` obrigatórios. Roles: `ADMINISTRADOR` (alias `ADMIN`), `CONSULTOR_TECNICO`, `MECANICO`, `CLIENTE`. Consultor lê ordens e atribui mecânico; administrador gerencia estoque. Mecânico usa `sub` como `mecanicoId`; cliente usa `client_id` assinado quando presente, ou `sub`, e nunca altera produção. O cliente vinculado a um usuário pode ter `client_id` distinto de `sub`. A posse da OS é verificada novamente a cada retry transacional de escrita, inclusive após uma atribuição concorrente.
 
+Consumo aceita `operationId` UUID opcional. O portal deve criar um UUID para cada intenção de consumo e reutilizá-lo, com a mesma peça e quantidade, se a resposta da requisição se perder. O recibo é gravado na mesma transação do estoque, revisão da ordem e outbox. Repetição autorizada retorna a ordem atual sem consumir ou publicar novamente, inclusive depois de `COMPLETED`; UUID inválido retorna 400 e chave reutilizada com outra peça/quantidade retorna 409. A chave pertence à OS; uma nova operação usa outro UUID. Sem `operationId`, permanece o comportamento legado, sem garantia de deduplicação de requisições HTTP. A fachada OS `PATCH /api/v1/ordens-servico/:id/consumo-peca` encaminha esse campo sem substituí-lo.
+
 Catálogo/estoque para o portal: `/api/v1/production/inventory` (`GET` paginado, `POST` cadastro), `/:id` (`GET`, `PATCH` metadados), `/:id/entrada`, `/:id/ativar`, `/:id/desativar` (`PATCH`). Query `filialId` identifica o saldo da filial; cadastro permite código igual em filiais diferentes e impede duplicidade na mesma filial. Cadastro/entrada usam unidades inteiras; entrada faz incremento atômico sem sobrescrever reservas concorrentes. Código da peça é imutável. O OS expõe a fachada HTTP `/api/v1/estoque` para compatibilidade do portal e mantém todos os dados no Production, sem tabela SQL duplicada. Mecânicos podem consultar estoque, somente administradores alteram.
+
+A listagem aceita `busca` (trecho de código, nome ou descrição, ignorando caixa/acentos), `ativo=true|false`, `filialId`, `pagina` e `porPagina` (1–100). Filtros são aplicados a todo o catálogo antes da paginação; `meta.total` e `totalPaginas` contam somente o resultado filtrado, com zero páginas quando não há correspondência. Ausência de `ativo` inclui ativos e inativos; estoque zero continua sendo um cadastro válido. Ordenação por nome tem desempate determinístico por filial, código e ID. Código+filial identifica a peça para pessoas, enquanto o UUID existente permanece a chave interna. O lookup interno exige filial e retorna o estado ativo inclusive para leitura histórica; os serviços chamadores devem rejeitar peça inativa em novas solicitações/orçamentos. Reserva verifica novamente existência, filial e estado ativo e mantém as condições transacionais autoritativas.
+
+Excesso de consumo retorna HTTP400 com `code=QUANTITY_EXCEEDS_RESERVATION`, `definitive=true`, `pecaId`, `filialId`, `quantidadeSolicitada`, `quantidadeReservada`, `quantidadeConsumida` e `quantidadeRestante`, além de mensagem indicando que nada foi consumido. Quantidade inválida e peça não reservada usam `INVALID_CONSUMPTION_QUANTITY` e `PART_NOT_RESERVED`. O recibo idempotente é conferido antes dessas validações para que repetir uma operação já confirmada permaneça seguro.
 
 ## Mensageria, consistência e compensação
 
@@ -41,13 +48,15 @@ Comandos: `ReserveExecution` com `payload.budget={items:[{description,quantity,u
 
 Eventos: `ExecutionReserved`, `ExecutionReady`, `ExecutionCancelled`, `ExecutionStarted`, `ProductionCompleted`, `MechanicAssigned {mecanicoId}`, `DiagnosisRecorded {descricao}`, `PartsConsumed {pecaId,quantidade}`. Falhas de domínio retornam `CommandFailed {commandType,reason}` via outbox, sem mutação parcial. Mensagens inválidas/falhas de infraestrutura não são confirmadas; SQS tenta novamente e encaminha à DLQ após cinco recebimentos.
 
+Falha de estoque em `ReserveExecution` acrescenta `code=INSUFFICIENT_STOCK` e `faltasEstoque:[{pecaId,nome,codigo?,filialId,quantidadeNecessaria,quantidadeDisponivel,quantidadeFaltante,motivo}]`. O motivo distingue `ESTOQUE_INSUFICIENTE`, `PECA_INATIVA` e `PECA_NAO_ENCONTRADA_NA_FILIAL`. A explicação é lida novamente após rejeição transacional por concorrência; não substitui a condição de saldo/ativo no DynamoDB. `reason` e o envelope v1 permanecem compatíveis com consumidores antigos. Reservas novas guardam nome/código como snapshots opcionais de identidade, sem alterar IDs ou a estrutura da tabela.
+
 Uma única `TransactWriteItems` grava alteração da ordem com controle de versão, mutações condicionais de estoque, inbox, marcador permanente do passo `(osId,sagaId,type)` e outbox. Assim, uma peça sem saldo aborta a reserva inteira; duplicatas não reservam nem compensam duas vezes. Cancelamento grava tombstone mesmo sem existir ordem. Reserva/confirmação verificam ausência do tombstone dentro da mesma transação, impedindo reabertura por mensagem tardia.
 
 Outbox persistente usa GSI `pending-index` e lease condicional de 30s; envio SQS vem antes da remoção do índice. Queda após envio pode repetir evento; OS deve deduplicar `messageId`. Inbox e eventos enviados têm TTL de sete dias; marcadores de passos/tombstones não expiram. Leitura individual é consistente; fila por filial usa GSI eventualmente consistente. Consulta administrativa sem filial percorre a tabela paginada: para operação nacional, deve ganhar índice dedicado/paginação de API antes de alto volume.
 
 ### Modelo DynamoDB
 
-Tabela exclusiva, chave string `pk`: `ORDER#osId`, `STOCK#filialId#pecaId`, `CODE#filialId#codigo`, `INBOX#messageId`, `STEP#osId#sagaId#type`, `CANCELLED#sagaId`, `OUTBOX#messageId`. GSI: hash `gsi1pk`, sort `gsi1sk`, projeção ALL; TTL `expiresAt`. Ordens indexadas por `ORDERS#filialId`; outbox por `OUTBOX#PENDING`. Cadastro da peça e marcador de código único são escritos juntos em transação. Proibido reutilizar esta tabela por outro serviço.
+Tabela exclusiva, chave string `pk`: `ORDER#osId`, `STOCK#filialId#pecaId`, `CODE#filialId#codigo`, `INBOX#messageId`, `STEP#osId#sagaId#type`, `CANCELLED#sagaId`, `OUTBOX#messageId` e `CONSUMPTION#osId#operationId`. O recibo de consumo guarda somente o hash SHA-256 de peça/quantidade, não expira e não aumenta o agregado da ordem. Sua inclusão usa a tabela existente, sem migração. GSI: hash `gsi1pk`, sort `gsi1sk`, projeção ALL; TTL `expiresAt`. Ordens indexadas por `ORDERS#filialId`; outbox por `OUTBOX#PENDING`. Cadastro da peça e marcador de código único são escritos juntos em transação. Proibido reutilizar esta tabela por outro serviço.
 
 ## Desenvolvimento e validação
 
