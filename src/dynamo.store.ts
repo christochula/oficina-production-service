@@ -15,6 +15,9 @@ export class DynamoStore extends Store {
   }
   async getOrder(osId: string): Promise<Order | undefined> { return (await this.get(`ORDER#${osId}`))?.value; }
   async exists(pk: string): Promise<boolean> { return !!(await this.get(pk)); }
+  async getConsumptionReceipt(osId: string, operationId: string): Promise<string | undefined> {
+    return (await this.get(`CONSUMPTION#${osId}#${operationId}`))?.fingerprint;
+  }
   async listOrders(filialId?: string): Promise<Order[]> {
     const result: Order[] = [];
     let cursor: Record<string, any> | undefined;
@@ -90,6 +93,7 @@ export class DynamoStore extends Store {
     } });
     if (change.inbox) putUnique(`INBOX#${change.inbox}`, { expiresAt: Math.floor(Date.now() / 1000) + 604800 });
     if (change.step) putUnique(`STEP#${change.step}`);
+    if (change.consumption) putUnique(`CONSUMPTION#${change.consumption.osId}#${change.consumption.operationId}`, { fingerprint: change.consumption.fingerprint });
     if (change.cancelSaga) tx.push({ Put: { TableName: this.table, Item: { pk: `CANCELLED#${change.cancelSaga}` } } });
     if (change.activeSaga) tx.push({ ConditionCheck: {
       TableName: this.table, Key: { pk: `CANCELLED#${change.activeSaga}` }, ConditionExpression: 'attribute_not_exists(pk)',
@@ -121,7 +125,7 @@ export class DynamoStore extends Store {
     try { await this.db.send(new TransactWriteCommand({ TransactItems: tx })); }
     catch (error: any) {
       if (error.name !== 'TransactionCanceledException') throw error;
-      const stockStart = Number(!!change.inbox) + Number(!!change.step) + Number(!!change.cancelSaga) + Number(!!change.activeSaga) + Number(!!change.order);
+      const stockStart = Number(!!change.inbox) + Number(!!change.step) + Number(!!change.consumption) + Number(!!change.cancelSaga) + Number(!!change.activeSaga) + Number(!!change.order);
       const stockFailure = error.CancellationReasons?.slice(stockStart, stockStart + (change.stocks?.length || 0)).some((r: any) => r.Code === 'ConditionalCheckFailed');
       if (stockFailure) throw new InsufficientStock('Insufficient stock or reservation');
       throw new Conflict('Concurrent change');

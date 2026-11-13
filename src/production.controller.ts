@@ -34,7 +34,7 @@ export class ProductionController {
   }
   @Post('orders/:osId/consume')
   async consume(@Req() req: { actor: Actor }, @Param('osId') osId: string, @Body() body: ConsumeDto) {
-    ownership(req.actor, await this.service.get(osId), true); return this.service.consume(osId, body.pecaId, body.quantidade,req.actor);
+    ownership(req.actor, await this.service.get(osId), true); return this.service.consume(osId, body.pecaId, body.quantidade,req.actor,body.operationId);
   }
   @Post('orders/:osId/complete')
   async complete(@Req() req: { actor: Actor }, @Param('osId') osId: string) {

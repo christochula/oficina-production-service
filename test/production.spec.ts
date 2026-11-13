@@ -69,6 +69,130 @@ describe('Production transaction lifecycle', () => {
     await service.command(message('ConfirmExecution',{},'os1','saga1'));
     expect((await service.get('os1')).status).toBe('RESERVED');expect((await store.getStock('f1','p1'))?.reserved).toBe(2);
   });
+  it('compensates repeated attempts with insufficient stock, then reserves after replenishment', async () => {
+    await diagnosed(); await service.stock('f1', 'p1', 0);
+    for (const sagaId of ['saga1', 'saga2', 'saga3']) {
+      await service.command(message('ReserveExecution', { budget }, 'os1', sagaId));
+      expect(store.outbox.at(-1)?.event).toMatchObject({ type: 'CommandFailed', sagaId, payload: { reason: 'Insufficient stock or reservation' } });
+      const cancellation = message('CancelExecutionReservation', {}, 'os1', sagaId);
+      await service.command(cancellation);
+      expect(store.outbox.at(-1)?.event).toMatchObject({ type: 'ExecutionCancelled', sagaId });
+      expect((await service.get('os1'))).toMatchObject({ status: 'CANCELLED', sagaId });
+      expect(store.keys.has(`CANCELLED#${sagaId}`)).toBe(true);
+      expect(await store.getStock('f1', 'p1')).toMatchObject({ quantity: 0, reserved: 0, used: 0 });
+      const count = store.outbox.length;
+      await service.command(cancellation);
+      await service.command({ ...cancellation, messageId: randomUUID() });
+      expect(store.outbox).toHaveLength(count);
+    }
+    await store.addStock('f1', 'p1', 2);
+    await service.command(message('ReserveExecution', { budget }, 'os1', 'saga4'));
+    await service.command(message('ConfirmExecution', {}, 'os1', 'saga4'));
+    expect(await service.get('os1')).toMatchObject({ status: 'READY', sagaId: 'saga4' });
+    expect(await store.getStock('f1', 'p1')).toMatchObject({ quantity: 0, reserved: 2, used: 0 });
+    for (const sagaId of ['saga1', 'saga2', 'saga3']) {
+      await service.command(message('ConfirmExecution', {}, 'os1', sagaId));
+      expect(await service.get('os1')).toMatchObject({ status: 'READY', sagaId: 'saga4' });
+    }
+  });
+  it.each(['RESERVED', 'READY', 'IN_PROGRESS', 'COMPLETED'])('does not cancel another active saga in %s', async state => {
+    await reserved(); await service.command(message('CancelExecutionReservation'));
+    await service.command(message('ReserveExecution', { budget }, 'os1', 'new-active-saga'));
+    if (state !== 'RESERVED') await service.command(message('ConfirmExecution', {}, 'os1', 'new-active-saga'));
+    if (['IN_PROGRESS', 'COMPLETED'].includes(state)) await service.start('os1');
+    if (state === 'COMPLETED') { await service.consume('os1', 'p1', 2); await service.complete('os1'); }
+    const before = await service.get('os1'), stock = await store.getStock('f1', 'p1');
+    for (const type of ['CancelExecutionReservation', 'ReconcileExecutionReservation']) {
+      const reconciliationId = randomUUID();
+      await service.command(message(type, { reconciliationId }, 'os1', 'delayed-other-saga'));
+      expect(store.outbox.at(-1)?.event.type).toBe('CommandFailed');
+      if (type === 'ReconcileExecutionReservation') expect(store.outbox.at(-1)?.event.payload.reconciliationId).toBe(reconciliationId);
+      else expect(store.outbox.at(-1)?.event.payload).not.toHaveProperty('reconciliationId');
+      expect(await service.get('os1')).toEqual(before);
+      expect(await store.getStock('f1', 'p1')).toEqual(stock);
+      expect(store.keys.has('CANCELLED#delayed-other-saga')).toBe(false);
+    }
+  });
+  it.each(['missing-tombstone', 'consumed-part'])('rejects ambiguous cancelled aggregate with %s', async scenario => {
+    await reserved(); await service.command(message('CancelExecutionReservation'));
+    if (scenario === 'missing-tombstone') store.keys.delete('CANCELLED#saga1');
+    else store.orders.get('os1')!.parts[0].consumedQuantity = 1;
+    const before = await service.get('os1');
+    await service.command(message('CancelExecutionReservation', {}, 'os1', 'new-saga'));
+    expect(store.outbox.at(-1)?.event).toMatchObject({ type: 'CommandFailed', payload: { reason: 'Saga mismatch' } });
+    expect(await service.get('os1')).toEqual(before);
+    expect(store.keys.has('CANCELLED#new-saga')).toBe(false);
+  });
+  it('rechecks cancellation against a concurrent successful reservation', async () => {
+    await reserved(); await service.command(message('CancelExecutionReservation'));
+    jest.spyOn(store, 'commit').mockImplementationOnce(async () => {
+      await service.command(message('ReserveExecution', { budget }, 'os1', 'concurrent-saga'));
+      throw new Conflict();
+    });
+    await service.command(message('CancelExecutionReservation', {}, 'os1', 'failed-attempt'));
+    expect(store.outbox.at(-1)?.event).toMatchObject({ type: 'CommandFailed', payload: { reason: 'Saga mismatch' } });
+    expect(await service.get('os1')).toMatchObject({ status: 'RESERVED', sagaId: 'concurrent-saga' });
+    expect(await store.getStock('f1', 'p1')).toMatchObject({ quantity: 3, reserved: 2 });
+    expect(store.keys.has('CANCELLED#failed-attempt')).toBe(false);
+  });
+  it('reconciles an already recorded cancellation failure without clearing deduplication records', async () => {
+    await diagnosed(); await service.stock('f1', 'p1', 0);
+    await service.command(message('ReserveExecution', { budget }));
+    await service.command(message('CancelExecutionReservation'));
+    await service.command(message('ReserveExecution', { budget }, 'os1', 'saga2'));
+    // Previous versions persisted this failure and its permanent step key.
+    const failedCancellation = message('CancelExecutionReservation', {}, 'os1', 'saga2');
+    const failedStep = 'os1#saga2#CancelExecutionReservation';
+    await store.commit({ inbox: failedCancellation.messageId, step: failedStep, events: [{
+      ...failedCancellation, messageId: randomUUID(), type: 'CommandFailed',
+      payload: { commandType: 'CancelExecutionReservation', reason: 'Saga mismatch' },
+    }] });
+    const reconciliationId = randomUUID();
+    const reconciliation = message('ReconcileExecutionReservation', { reconciliationId }, 'os1', 'saga2');
+    await service.command(reconciliation);
+    expect(store.outbox.at(-1)?.event).toMatchObject({ type: 'ExecutionCancelled', sagaId: 'saga2', payload: { reconciliationId } });
+    expect(await service.get('os1')).toMatchObject({ status: 'CANCELLED', sagaId: 'saga2' });
+    expect(store.keys.has(`STEP#${failedStep}`)).toBe(true);
+    expect(store.keys.has(`STEP#os1#saga2#ReconcileExecutionReservation#${reconciliationId}`)).toBe(true);
+    expect(await store.getStock('f1', 'p1')).toMatchObject({ quantity: 0, reserved: 0, used: 0 });
+    const count = store.outbox.length;
+    await service.command(reconciliation);
+    await service.command({ ...reconciliation, messageId: randomUUID() });
+    expect(store.outbox).toHaveLength(count);
+  });
+  it('allows a new reconciliation ID after a failed reconciliation, while deduplicating the old ID', async () => {
+    await ready();
+    const firstId = randomUUID();
+    const first = message('ReconcileExecutionReservation', { reconciliationId: firstId }, 'os1', 'saga2');
+    await service.command(first);
+    expect(store.outbox.at(-1)?.event).toMatchObject({ type: 'CommandFailed', payload: {
+      commandType: 'ReconcileExecutionReservation', reason: 'Saga mismatch', reconciliationId: firstId,
+    } });
+    await service.command(message('CancelExecutionReservation'));
+    const count = store.outbox.length;
+    await service.command({ ...first, messageId: randomUUID() });
+    expect(store.outbox).toHaveLength(count);
+    const secondId = randomUUID();
+    await service.command(message('ReconcileExecutionReservation', { reconciliationId: secondId }, 'os1', 'saga2'));
+    expect(store.outbox.at(-1)?.event).toMatchObject({ type: 'ExecutionCancelled', sagaId: 'saga2', payload: { reconciliationId: secondId } });
+    expect(store.keys.has('CANCELLED#saga2')).toBe(true);
+    expect(await store.getStock('f1', 'p1')).toMatchObject({ quantity: 5, reserved: 0 });
+  });
+  it.each([undefined, null, '', 'not-a-uuid', 42])('rejects invalid reconciliation ID %p before changing state', async reconciliationId => {
+    await diagnosed(); const order = await service.get('os1'), count = store.outbox.length;
+    await expect(service.command(message('ReconcileExecutionReservation', { reconciliationId }))).rejects.toBeInstanceOf(BadRequestException);
+    expect(await service.get('os1')).toEqual(order);
+    expect(store.outbox).toHaveLength(count);
+    expect(store.keys.size).toBe(0);
+  });
+  it('rejects cross-branch reconciliation without cancelling the order', async () => {
+    await reserved(); await service.command(message('CancelExecutionReservation'));
+    const reconciliationId = randomUUID(), order = await service.get('os1');
+    await service.command({ ...message('ReconcileExecutionReservation', { reconciliationId }, 'os1', 'saga2'), filialId: 'other-branch' });
+    expect(store.outbox.at(-1)?.event).toMatchObject({ type: 'CommandFailed', payload: { reconciliationId, reason: 'Branch mismatch' } });
+    expect(await service.get('os1')).toEqual(order);
+    expect(store.keys.has('CANCELLED#saga2')).toBe(false);
+  });
   it.each(['IN_PROGRESS', 'COMPLETED'])('never compensates physical work in %s', async state => {
     await ready(); await service.start('os1');
     if (state === 'COMPLETED') { await service.consume('os1', 'p1', 2); await service.complete('os1'); }

@@ -411,28 +411,46 @@
         "operationId": "InventoryController_list",
         "parameters": [
           {
-            "name": "filialId",
-            "required": true,
+            "name": "ativo",
+            "required": false,
+            "in": "query",
+            "description": "Ausente retorna ativos e inativos.",
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "busca",
+            "required": false,
+            "in": "query",
+            "description": "Trecho de código, nome ou descrição; ignora caixa e acentos, antes da paginação.",
+            "schema": {}
+          },
+          {
+            "name": "porPagina",
+            "required": false,
             "in": "query",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
             "name": "pagina",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
-            "name": "porPagina",
-            "required": true,
+            "name": "filialId",
+            "required": false,
             "in": "query",
-            "schema": {
-              "type": "string"
-            }
+            "schema": {}
           }
         ],
         "responses": {
@@ -674,6 +692,42 @@
           "Inventory"
         ]
       }
+    },
+    "/api/v1/production/internal/inventory/{id}": {
+      "get": {
+        "operationId": "InternalInventoryController_get",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filialId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "internal-token": []
+          }
+        ],
+        "tags": [
+          "Internal"
+        ]
+      }
     }
   },
   "info": {
@@ -729,6 +783,11 @@
           "quantidade": {
             "type": "number",
             "minimum": 1
+          },
+          "operationId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Reuse the same UUID and payload when retrying a consumption whose response was lost."
           }
         },
         "required": [

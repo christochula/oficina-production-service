@@ -32,4 +32,11 @@ describe('DogStatsD duration contract',()=>{
     expect(duration.mock.calls[1][1]).toBe(400);
     await expect(lastValueFrom(interceptor.intercept(context,{handle:()=>throwError(()=>new Error('offline'))}))).rejects.toThrow('offline');expect(duration.mock.calls[2][1]).toBe(500);
   });
+  it('emits processed/failed counts under the same dashboard metric contract',()=>{
+    metrics.messageProcessed();metrics.messageProcessed(true);
+    expect(send.mock.calls[0][0].toString()).toBe('oficina.messaging.processed:1|c|#env:local,service:oficina-production-service,version:4.0.0,queue:production-commands');
+    expect(send.mock.calls[1][0].toString()).toContain('oficina.messaging.failed:1|c|#');
+    process.env.DD_METRICS_ENABLED='false';metrics.messageProcessed(true);expect(send).toHaveBeenCalledTimes(2);
+    metrics.duration('GET',200,NaN);expect(send).toHaveBeenCalledTimes(2);
+  });
 });

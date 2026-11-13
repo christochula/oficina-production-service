@@ -1,5 +1,10 @@
 export type Status = 'DIAGNOSIS' | 'RESERVED' | 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
-export interface Part { pecaId: string; description: string; quantity: number; consumedQuantity: number }
+export interface Part { pecaId: string; description: string; quantity: number; consumedQuantity: number; codigo?: string; nome?: string }
+export interface StockShortage {
+  pecaId: string; nome: string; codigo?: string; filialId: string;
+  quantidadeNecessaria: number; quantidadeDisponivel: number; quantidadeFaltante: number;
+  motivo: 'ESTOQUE_INSUFICIENTE' | 'PECA_INATIVA' | 'PECA_NAO_ENCONTRADA_NA_FILIAL';
+}
 export interface Order {
   osId: string; filialId: string; clienteId: string; mecanicoId?: string;
   status: Status; diagnosis?: string; parts: Part[]; sagaId?: string; revision: number;
@@ -14,8 +19,10 @@ export interface Stock {
   codigo?: string; nome?: string; descricao?: string | null; precoVenda?: number; ativo?: boolean; quantidadeMinima?: number;
 }
 export interface StockChange { pecaId: string; filialId: string; action: 'reserve' | 'release' | 'consume'; quantity: number }
+export interface ConsumptionReceipt { osId: string; operationId: string; fingerprint: string }
 export interface Commit {
   order?: Order; expectedRevision?: number; inbox?: string; step?: string;
+  consumption?: ConsumptionReceipt;
   cancelSaga?: string; activeSaga?: string; stocks?: StockChange[]; events: Envelope[];
 }
 export interface OutboxItem { pk: string; event: Envelope }
@@ -29,10 +36,13 @@ export abstract class Store {
   abstract updateCatalog(filialId: string, pecaId: string, patch: Partial<Stock>): Promise<Stock>;
   abstract addStock(filialId: string, pecaId: string, quantity: number): Promise<Stock>;
   abstract exists(pk: string): Promise<boolean>;
+  abstract getConsumptionReceipt(osId: string, operationId: string): Promise<string | undefined>;
   abstract commit(change: Commit): Promise<void>;
   abstract pending(): Promise<OutboxItem[]>;
   abstract claim(pk: string, owner: string): Promise<boolean>;
   abstract sent(pk: string, owner: string): Promise<void>;
 }
 export class Conflict extends Error {}
-export class InsufficientStock extends Error {}
+export class InsufficientStock extends Error {
+  constructor(message: string, readonly shortages?: StockShortage[]) { super(message); }
+}

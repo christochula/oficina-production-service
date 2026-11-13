@@ -19,6 +19,27 @@ describe('DynamoDB atomic adapter', () => {
     send.mockResolvedValueOnce({}); expect(await store.listOrders()).toEqual([]);
     expect(send.mock.calls[2][0].constructor.name).toBe('ScanCommand');
   });
+  it('reads consumption receipts strongly and commits them atomically with order, stock and outbox', async () => {
+    send.mockResolvedValueOnce({Item:{fingerprint:'sha256'}}).mockResolvedValueOnce({});
+    expect(await store.getConsumptionReceipt('o1','op')).toBe('sha256');
+    expect(await store.getConsumptionReceipt('o1','missing')).toBeUndefined();
+    expect(send.mock.calls[0][0].input).toMatchObject({ConsistentRead:true,Key:{pk:'CONSUMPTION#o1#op'}});
+    await store.commit({order,expectedRevision:0,consumption:{osId:'o1',operationId:'op',fingerprint:'sha256'},stocks:[{filialId:'f1',pecaId:'p1',quantity:1,action:'consume'}],events:[event]});
+    const tx=send.mock.calls[2][0].input.TransactItems;
+    expect(tx).toHaveLength(4);
+    expect(tx[0].Put).toMatchObject({Item:{pk:'CONSUMPTION#o1#op',fingerprint:'sha256'},ConditionExpression:'attribute_not_exists(pk)'});
+    expect(tx[0].Put.Item).not.toHaveProperty('expiresAt');
+    expect(tx[1].Put.ExpressionAttributeValues).toEqual({':revision':0});
+    expect(tx[2].Update.UpdateExpression).toContain('used + :q');
+    expect(tx[3].Put.Item).toMatchObject({event,gsi1pk:'OUTBOX#PENDING'});
+  });
+  it('distinguishes receipt conflicts from stock failures in the extended transaction', async () => {
+    const change={order,expectedRevision:0,consumption:{osId:'o1',operationId:'op',fingerprint:'sha256'},stocks:[{filialId:'f1',pecaId:'p1',quantity:1,action:'consume' as const}],events:[event]};
+    send.mockRejectedValueOnce(namedError('TransactionCanceledException',{CancellationReasons:[{Code:'ConditionalCheckFailed'},{Code:'None'},{Code:'None'},{Code:'None'}]}));
+    await expect(store.commit(change)).rejects.toBeInstanceOf(Conflict);
+    send.mockRejectedValueOnce(namedError('TransactionCanceledException',{CancellationReasons:[{Code:'None'},{Code:'None'},{Code:'ConditionalCheckFailed'},{Code:'None'}]}));
+    await expect(store.commit(change)).rejects.toBeInstanceOf(InsufficientStock);
+  });
   it('atomically writes order, inbox, saga step, outbox and all stock changes', async () => {
     await store.commit({order,expectedRevision:0,inbox:'m1',step:'s1#ReserveExecution',activeSaga:'s1',stocks:[{filialId:'f1',pecaId:'p1',quantity:2,action:'reserve'},{filialId:'f1',pecaId:'p2',quantity:1,action:'release'},{filialId:'f1',pecaId:'p3',quantity:1,action:'consume'}],events:[event]});
     const tx = send.mock.calls[0][0].input.TransactItems;

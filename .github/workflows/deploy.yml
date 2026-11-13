@@ -4,62 +4,260 @@ on:
     workflows: [Production CI]
     branches: [main]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Branch revisada; deve ser a branch selecionada no dispatch
+        required: true
+        type: string
+        default: feature/aws-mercadopago-test
+      target_sha:
+        description: SHA completo aprovado no CI desta branch
+        required: true
+        type: string
+      operation:
+        description: Provisionamento separado da publicacao da aplicacao
+        type: choice
+        options: [plan, apply, deploy]
+        default: plan
+  push:
+    tags: [phase4/production-plan-*, phase4/production-apply-*, phase4/production-deploy-*]
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: production-homolog
   cancel-in-progress: false
 env:
   AWS_REGION: us-east-1
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
 jobs:
-  deploy:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+  gate:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.request.outputs.sha }}
+      ref: ${{ steps.request.outputs.ref }}
+      operation: ${{ steps.request.outputs.operation }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Verify one complete CI run for the exact branch and commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ inputs.target_sha || github.event.workflow_run.head_sha || github.sha }}
+          TARGET_REF: ${{ inputs.target_ref || github.event.workflow_run.head_branch || vars.DEPLOY_SOURCE_REF || 'feature/aws-mercadopago-test' }}
+          DISPATCH_SHA: ${{ github.event_name == 'workflow_dispatch' && github.sha || '' }}
+          DISPATCH_REF: ${{ github.event_name == 'workflow_dispatch' && github.ref || '' }}
+          CI_WORKFLOW_FILE: ci.yml
+          REQUIRED_DEPLOY_GATES: Build tests quality
+        run: node scripts/check-deploy-gates.mjs
+      - name: Resolve the reviewed operation
+        id: request
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TAG_NAME: ${{ github.ref_name }}
+          REQUESTED_OPERATION: ${{ inputs.operation }}
+          TARGET_SHA: ${{ inputs.target_sha || github.event.workflow_run.head_sha || github.sha }}
+          TARGET_REF: ${{ inputs.target_ref || github.event.workflow_run.head_branch || vars.DEPLOY_SOURCE_REF || 'feature/aws-mercadopago-test' }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            workflow_run) operation=deploy ;;
+            workflow_dispatch) operation="$REQUESTED_OPERATION" ;;
+            push)
+              case "$TAG_NAME" in
+                phase4/production-plan-*) operation=plan ;;
+                phase4/production-apply-*) operation=apply ;;
+                phase4/production-deploy-*) operation=deploy ;;
+                *) echo 'Unsupported deployment tag'; exit 1 ;;
+              esac ;;
+            *) exit 1 ;;
+          esac
+          case "$operation" in plan|apply|deploy) ;; *) exit 1 ;; esac
+          printf 'sha=%s\nref=%s\noperation=%s\n' "$TARGET_SHA" "$TARGET_REF" "$operation" >> "$GITHUB_OUTPUT"
+  execute:
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
     environment: homolog
     steps:
       - uses: actions/checkout@v4
-        with: {ref: '${{ github.event.workflow_run.head_sha }}'}
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Require a successful reviewed plan for this exact commit
+        if: needs.gate.outputs.operation == 'apply'
+        id: reviewed
+        uses: actions/github-script@v7
+        env:
+          APPROVED_PLAN_RUN_ID: ${{ vars.PRODUCTION_APPROVED_PLAN_RUN_ID }}
+          TARGET_SHA: ${{ needs.gate.outputs.sha }}
+        with:
+          script: |
+            const id = Number(process.env.APPROVED_PLAN_RUN_ID);
+            if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Review a plan and configure PRODUCTION_APPROVED_PLAN_RUN_ID first');
+            const { data: run } = await github.rest.actions.getWorkflowRun({ ...context.repo, run_id: id });
+            const repository = `${context.repo.owner}/${context.repo.repo}`;
+            if (run.head_sha !== process.env.TARGET_SHA || run.conclusion !== 'success' || run.head_repository?.full_name !== repository || run.path.split('@')[0] !== '.github/workflows/deploy.yml') throw new Error('Approved plan must be successful in this repository and exact commit');
+            const name = `production-plan-${process.env.TARGET_SHA}-${id}`;
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, { ...context.repo, run_id: id, per_page: 100 });
+            if (!artifacts.some(artifact => artifact.name === name && !artifact.expired)) throw new Error('Approved run has no reviewed text plan');
+            core.setOutput('name', name);
+      - uses: actions/download-artifact@v4
+        if: needs.gate.outputs.operation == 'apply'
+        with:
+          name: ${{ steps.reviewed.outputs.name }}
+          run-id: ${{ vars.PRODUCTION_APPROVED_PLAN_RUN_ID }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/production-reviewed
+      - name: Validate required deployment configuration
+        env:
+          BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          CLUSTER: ${{ vars.EKS_CLUSTER_NAME }}
+          OS_QUEUE_URL: ${{ vars.OS_QUEUE_URL }}
+          OPERATION: ${{ needs.gate.outputs.operation }}
+        run: |
+          set -euo pipefail
+          test -n "$BUCKET" || { echo 'Configure TF_STATE_BUCKET'; exit 1; }
+          if [ "$OPERATION" = deploy ]; then
+            test -n "$CLUSTER" && test -n "$OS_QUEUE_URL" || { echo 'Configure EKS_CLUSTER_NAME and OS_QUEUE_URL'; exit 1; }
+          fi
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
+      - name: Verify expected AWS account before resource access
+        env:
+          EXPECTED_AWS_ACCOUNT_ID: ${{ vars.EXPECTED_AWS_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          [[ "${EXPECTED_AWS_ACCOUNT_ID:-}" =~ ^[0-9]{12}$ ]] || { echo 'Configure EXPECTED_AWS_ACCOUNT_ID before AWS resource access.' >&2; exit 1; }
+          actual_account="$(aws sts get-caller-identity --query Account --output text)"
+          [[ "$actual_account" == "$EXPECTED_AWS_ACCOUNT_ID" ]] || { echo 'AWS credentials belong to a different account.' >&2; exit 1; }
       - uses: hashicorp/setup-terraform@v3
         with: {terraform_version: 1.16.0}
-      - name: Provision service resources
-        working-directory: infra
+      - name: Initialize the exclusive service state
         env:
           TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
         run: |
-          terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=oficina/production/terraform.tfstate" -backend-config="region=${AWS_REGION}" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
-          terraform apply -auto-approve -input=false -lock-timeout=5m
-          echo "IMAGE_REPOSITORY=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_ENV"
-          echo "TABLE_NAME=$(terraform output -raw table_name)" >> "$GITHUB_ENV"
-          echo "INBOX_URL=$(terraform output -raw inbox_queue_url)" >> "$GITHUB_ENV"
-          echo "APP_SECRET=$(terraform output -raw application_secret_id)" >> "$GITHUB_ENV"
-      - uses: aws-actions/amazon-ecr-login@v2
-      - name: Build and push exact tested revision
+          set -euo pipefail
+          aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output json
+          terraform -chdir=infra init -input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=oficina/production/terraform.tfstate" -backend-config="region=${AWS_REGION}" -backend-config="encrypt=true" -backend-config="use_lockfile=true"
+          terraform -chdir=infra fmt -check
+          terraform -chdir=infra validate
+      - name: Plan without resource deletion or replacement
+        if: needs.gate.outputs.operation != 'deploy'
         env:
-          REVISION: ${{ github.event.workflow_run.head_sha }}
+          TARGET_SHA: ${{ needs.gate.outputs.sha }}
+          TARGET_REF: ${{ needs.gate.outputs.ref }}
+          PLAN_WORKFLOW_FILE: deploy.yml
+          PLAN_OPERATION: ${{ needs.gate.outputs.operation }}
+          PLAN_SCOPE: production
         run: |
+          set -euo pipefail
+          terraform -chdir=infra plan -input=false -lock-timeout=5m -out="$RUNNER_TEMP/production.tfplan"
+          terraform -chdir=infra show -json "$RUNNER_TEMP/production.tfplan" | node scripts/terraform-plan-fingerprint.mjs > "$RUNNER_TEMP/production-plan-review.json"
+          terraform -chdir=infra show -no-color "$RUNNER_TEMP/production.tfplan" > "$RUNNER_TEMP/production-plan.txt"
+      - name: Publish only the redacted text plan for review
+        if: needs.gate.outputs.operation == 'plan'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-plan-${{ needs.gate.outputs.sha }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/production-plan.txt
+            ${{ runner.temp }}/production-plan-review.json
+          retention-days: 7
+          if-no-files-found: error
+      - name: Apply only an identical reviewed plan
+        if: needs.gate.outputs.operation == 'apply'
+        run: |
+          set -euo pipefail
+          cmp -s "$RUNNER_TEMP/production-plan.txt" "$RUNNER_TEMP/production-reviewed/production-plan.txt" || { echo 'Plan changed after review; request and review a new plan'; exit 1; }
+          node scripts/terraform-plan-fingerprint.mjs --compare "$RUNNER_TEMP/production-reviewed/production-plan-review.json" "$RUNNER_TEMP/production-plan-review.json"
+          terraform -chdir=infra apply -input=false -lock-timeout=5m "$RUNNER_TEMP/production.tfplan"
+      - name: Read only the application resource outputs
+        if: needs.gate.outputs.operation == 'deploy'
+        run: |
+          set -euo pipefail
+          echo "IMAGE_REPOSITORY=$(terraform -chdir=infra output -raw ecr_repository_url)" >> "$GITHUB_ENV"
+          echo "TABLE_NAME=$(terraform -chdir=infra output -raw table_name)" >> "$GITHUB_ENV"
+          echo "INBOX_URL=$(terraform -chdir=infra output -raw inbox_queue_url)" >> "$GITHUB_ENV"
+          echo "APP_SECRET=$(terraform -chdir=infra output -raw application_secret_id)" >> "$GITHUB_ENV"
+      - name: Initialize Production runtime from the existing canonical secrets
+        if: needs.gate.outputs.operation == 'deploy'
+        env:
+          RUNTIME_COMPONENT: production
+          JWT_SECRET_ID: ${{ vars.JWT_SECRET_ID || 'oficina/fase4/jwt' }}
+          AUTH_CLIENT_LOOKUP_SECRET_ID: ${{ vars.AUTH_CLIENT_LOOKUP_SECRET_ID || 'oficina/fase4/auth-client-lookup' }}
+          PRODUCTION_RUNTIME_SECRET_ID: ${{ vars.PRODUCTION_SECRET_ID || vars.APPLICATION_SECRET_ID || env.APP_SECRET }}
+        run: node scripts/configure-runtime-secrets.mjs
+      - uses: aws-actions/amazon-ecr-login@v2
+        if: needs.gate.outputs.operation == 'deploy'
+      - name: Build and push the exact tested revision
+        if: needs.gate.outputs.operation == 'deploy'
+        env:
+          REVISION: ${{ needs.gate.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
           docker build -t "${IMAGE_REPOSITORY}:${REVISION}" .
           docker push "${IMAGE_REPOSITORY}:${REVISION}"
       - uses: azure/setup-helm@v4.3.0
+        if: needs.gate.outputs.operation == 'deploy'
         with: {version: v3.17.3}
+      - name: Select a current kubectl patch matching the cluster minor
+        if: needs.gate.outputs.operation == 'deploy'
+        id: kubectl
+        env:
+          CLUSTER: ${{ vars.EKS_CLUSTER_NAME }}
+        run: |
+          set -euo pipefail
+          minor="$(aws eks describe-cluster --name "$CLUSTER" --query cluster.version --output text)"
+          [[ "$minor" =~ ^1\.[0-9]+$ ]] || exit 1
+          version="$(curl --fail --silent --show-error --location "https://dl.k8s.io/release/stable-${minor}.txt")"
+          [[ "$version" == "v${minor}."* && "$version" =~ ^v1\.[0-9]+\.[0-9]+$ ]] || exit 1
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: azure/setup-kubectl@v4
+        if: needs.gate.outputs.operation == 'deploy'
+        with:
+          version: ${{ steps.kubectl.outputs.version }}
       - name: Deploy and verify rollout
+        if: needs.gate.outputs.operation == 'deploy'
         env:
           CLUSTER: ${{ vars.EKS_CLUSTER_NAME }}
           OS_QUEUE_URL: ${{ vars.OS_QUEUE_URL }}
-          REVISION: ${{ github.event.workflow_run.head_sha }}
+          APPLICATION_SECRET_ID: ${{ vars.PRODUCTION_SECRET_ID || vars.APPLICATION_SECRET_ID || env.APP_SECRET }}
+          REVISION: ${{ needs.gate.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           aws eks update-kubeconfig --name "$CLUSTER"
           kubectl create namespace oficina-fase4 --dry-run=client -o yaml | kubectl apply -f -
-          secret_file="$(mktemp)"
-          trap 'rm -f "$secret_file"' EXIT
-          aws secretsmanager get-secret-value --secret-id "$APP_SECRET" --query SecretString --output text | jq -er 'to_entries[] | "\(.key)=\(.value)"' > "$secret_file"
-          kubectl -n oficina-fase4 create secret generic production-secrets --from-env-file="$secret_file" --from-literal=AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" --from-literal=AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" --from-literal=AWS_SESSION_TOKEN="$AWS_SESSION_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
-          helm upgrade --install oficina-production-service ./helm --namespace oficina-fase4 --atomic --wait --timeout 5m --set image.repository="$IMAGE_REPOSITORY" --set image.tag="$REVISION" --set env.DYNAMODB_TABLE_NAME="$TABLE_NAME" --set env.INBOX_QUEUE_URL="$INBOX_URL" --set env.OS_QUEUE_URL="$OS_QUEUE_URL"
+          secret_dir="$(mktemp -d)"
+          trap 'rm -rf "$secret_dir"' EXIT
+          chmod 700 "$secret_dir"
+          aws secretsmanager get-secret-value --secret-id "$APPLICATION_SECRET_ID" --query SecretString --output text > "$secret_dir/application.json"
+          for key in JWT_SECRET AUTH_CLIENT_LOOKUP_TOKEN; do
+            jq -ej --arg key "$key" '.[$key] | select(type == "string" and length >= 32)' "$secret_dir/application.json" > "$secret_dir/$key"
+          done
+          rm -f "$secret_dir/application.json"
+          printf '%s' "$AWS_ACCESS_KEY_ID" > "$secret_dir/AWS_ACCESS_KEY_ID"
+          printf '%s' "$AWS_SECRET_ACCESS_KEY" > "$secret_dir/AWS_SECRET_ACCESS_KEY"
+          printf '%s' "$AWS_SESSION_TOKEN" > "$secret_dir/AWS_SESSION_TOKEN"
+          kubectl -n oficina-fase4 create secret generic production-secrets --from-file="$secret_dir" --dry-run=client -o yaml | kubectl apply -f -
+          helm upgrade --install oficina-production-service ./helm --namespace oficina-fase4 --atomic --wait --timeout 8m --set-string image.repository="$IMAGE_REPOSITORY" --set-string image.tag="$REVISION" --set-string env.DYNAMODB_TABLE_NAME="$TABLE_NAME" --set-string env.INBOX_QUEUE_URL="$INBOX_URL" --set-string env.OS_QUEUE_URL="$OS_QUEUE_URL"
           kubectl -n oficina-fase4 rollout restart deployment/oficina-production-service
           kubectl -n oficina-fase4 rollout status deployment/oficina-production-service --timeout=180s
+          kubectl -n oficina-fase4 get pods,svc,hpa
+      - name: Delete ephemeral binary plans
+        if: always()
+        run: rm -f "$RUNNER_TEMP/production.tfplan"

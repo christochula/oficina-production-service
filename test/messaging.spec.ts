@@ -4,15 +4,17 @@ import { Messaging, parseEnvelope } from '../src/messaging';
 import { ProductionService } from '../src/production.service';
 import { MemoryStore } from './memory.store';
 import { Envelope } from '../src/model';
+import { Metrics } from '../src/metrics';
 const event: Envelope = { messageId:'m1',type:'CancelExecutionReservation',version:1,sagaId:'s1',osId:'o1',filialId:'f1',correlationId:'c1',occurredAt:'2026-11-04T12:00:00Z',payload:{} };
 describe('SQS durability, retry and shutdown', () => {
   let store: MemoryStore; let service: ProductionService; let worker: Messaging; let send: jest.Mock;
+  const metrics={messageProcessed:jest.fn()};
   beforeEach(() => {
-    store=new MemoryStore(); service=new ProductionService(store); worker=new Messaging(store,service);
+    store=new MemoryStore(); service=new ProductionService(store); worker=new Messaging(store,service,metrics as unknown as Metrics);
     send=jest.fn().mockResolvedValue({}); (worker as any).sqs={send,destroy:jest.fn()};
     jest.spyOn(Logger.prototype,'error').mockImplementation(()=>{}); jest.spyOn(Logger.prototype,'log').mockImplementation(()=>{});
   });
-  afterEach(()=>{ worker.onModuleDestroy(); jest.restoreAllMocks(); jest.useRealTimers(); delete process.env.WORKER_ENABLED; });
+  afterEach(()=>{ worker.onModuleDestroy(); jest.restoreAllMocks(); jest.useRealTimers(); delete process.env.WORKER_ENABLED; metrics.messageProcessed.mockClear(); });
   it('validates message envelopes before processing and rejects malformed poison messages', () => {
     expect(parseEnvelope(JSON.stringify(event))).toEqual(event);
     for (const value of [null,{}, {...event,version:2}, {...event,payload:[]}, {...event,osId:''}, {...event,occurredAt:'bad'}, {...event,traceparent:'bad'}, {...event,payload:null}]) expect(()=>parseEnvelope(JSON.stringify(value))).toThrow();
@@ -22,6 +24,7 @@ describe('SQS durability, retry and shutdown', () => {
     const command = jest.spyOn(service,'command');
     send.mockResolvedValueOnce({Messages:[{Body:JSON.stringify({...event,traceparent:'00-01234567890123456789012345678901-0123456789012345-01'}),ReceiptHandle:'receipt',MessageId:'aws1'}]});
     await worker.receive(); expect(command).toHaveBeenCalledTimes(1); expect(store.keys.has('CANCELLED#s1')).toBe(true);
+    expect(metrics.messageProcessed).toHaveBeenCalledWith();
     expect(send.mock.calls[1][0].constructor.name).toBe('DeleteMessageCommand');
   });
   it('leaves invalid and transiently failed messages unacknowledged for retry/DLQ', async () => {
@@ -29,6 +32,7 @@ describe('SQS durability, retry and shutdown', () => {
     jest.spyOn(service,'command').mockRejectedValueOnce(new Error('database unavailable'));
     await worker.receive(); expect(send).toHaveBeenCalledTimes(1);
     expect(Logger.prototype.error).toHaveBeenCalledTimes(3);
+    expect(metrics.messageProcessed.mock.calls).toEqual([[true],[true],[true]]);
     await worker.receive(); // empty SQS response
   });
   it('publishes durable outbox and marks sent only after successful send', async () => {

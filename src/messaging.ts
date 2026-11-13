@@ -4,6 +4,8 @@ import { randomUUID } from 'crypto';
 import tracer from 'dd-trace';
 import { Envelope, Store } from './model';
 import { ProductionService } from './production.service';
+import { traceOutbox, withTraceIds } from './tracing';
+import { Metrics } from './metrics';
 
 export function parseEnvelope(raw: string): Envelope {
   const value = JSON.parse(raw);
@@ -18,7 +20,7 @@ export class Messaging implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(Messaging.name);
   private timer?: NodeJS.Timeout;
   private busy = false;
-  constructor(private readonly store: Store, private readonly service: ProductionService) {}
+  constructor(private readonly store: Store, private readonly service: ProductionService, private readonly metrics: Metrics) {}
   onModuleInit(): void {
     if (process.env.WORKER_ENABLED === 'false') return;
     this.timer = setInterval(() => { void this.tick(); }, 1000);
@@ -28,7 +30,7 @@ export class Messaging implements OnModuleInit, OnModuleDestroy {
     if (this.busy) return;
     this.busy = true;
     try { await this.publish(); await this.receive(); }
-    catch (error: any) { this.logger.error(JSON.stringify({ operation: 'worker', error: error.message })); }
+    catch { this.metrics.messageProcessed(true,'production-worker'); this.logger.error(JSON.stringify({ operation: 'worker', event:'production.worker.failed' })); }
     finally { this.busy = false; }
   }
   async receive(): Promise<void> {
@@ -39,10 +41,13 @@ export class Messaging implements OnModuleInit, OnModuleDestroy {
       try {
         const event = parseEnvelope(item.Body || '');
         const parent = event.traceparent ? tracer.extract('http_headers', { traceparent: event.traceparent }) : null;
-        await tracer.trace('production.command', { childOf: parent || undefined, tags: { 'saga.id': event.sagaId, 'os.id': event.osId, 'message.type': event.type } }, async () => this.service.command(event));
+        await tracer.trace('production.command', { childOf: parent || undefined, resource:event.type, tags: { 'span.kind':'consumer','messaging.system':'aws_sqs','messaging.message_id':event.messageId,'saga.id': event.sagaId, 'os.id': event.osId, 'message.type': event.type,'correlation.id':event.correlationId } }, async () => {
+          await this.service.command(event);
+          this.metrics.messageProcessed();
+          console.log(JSON.stringify(withTraceIds({ event:'production.command.processed',operation:'command',type:event.type,messageId:event.messageId,sagaId:event.sagaId,correlationId:event.correlationId,osId:event.osId })));
+        });
         await this.sqs.send(new DeleteMessageCommand({ QueueUrl: process.env.INBOX_QUEUE_URL!, ReceiptHandle: item.ReceiptHandle! }));
-        this.logger.log(JSON.stringify({ operation: 'command', type: event.type, sagaId: event.sagaId, correlationId: event.correlationId, osId: event.osId }));
-      } catch (error: any) { this.logger.error(JSON.stringify({ operation: 'receive', messageId: item.MessageId, error: error.message })); }
+      } catch { this.metrics.messageProcessed(true); this.logger.error(JSON.stringify({ operation:'receive',event:'production.command.failed',messageId:item.MessageId })); }
     }
   }
   async publish(): Promise<void> {
@@ -50,10 +55,13 @@ export class Messaging implements OnModuleInit, OnModuleDestroy {
       const owner = randomUUID();
       if (!(await this.store.claim(item.pk, owner))) continue;
       const queue = process.env.OS_QUEUE_URL!;
-      await this.sqs.send(new SendMessageCommand({ QueueUrl: queue, MessageBody: JSON.stringify(item.event),
-        ...(queue?.endsWith('.fifo') ? { MessageGroupId: item.event.osId, MessageDeduplicationId: item.event.messageId } : {}),
-      }));
-      await this.store.sent(item.pk, owner);
+      await traceOutbox('production.outbox.publish',item.event,async outgoing=>{
+        await this.sqs.send(new SendMessageCommand({ QueueUrl: queue, MessageBody: JSON.stringify(outgoing),
+          ...(queue?.endsWith('.fifo') ? { MessageGroupId: outgoing.osId, MessageDeduplicationId: outgoing.messageId } : {}),
+        }));
+        await this.store.sent(item.pk, owner);
+        console.log(JSON.stringify(withTraceIds({event:'production.event.published',type:outgoing.type,messageId:outgoing.messageId,osId:outgoing.osId,sagaId:outgoing.sagaId,correlationId:outgoing.correlationId})));
+      });
     }
   }
 }

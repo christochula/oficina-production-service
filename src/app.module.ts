@@ -7,10 +7,10 @@ import { InternalController, ProductionController } from './production.controlle
 import { InternalGuard, JwtGuard } from './auth';
 import { Messaging } from './messaging';
 import { HealthController } from './health.controller';
-import { InventoryController, InventoryService } from './inventory';
+import { InternalInventoryController, InventoryController, InventoryService } from './inventory';
 import { Metrics, MetricsInterceptor } from './metrics';
 @Module({
-  controllers: [ProductionController, InternalController, HealthController, InventoryController],
+  controllers: [ProductionController, InternalController, HealthController, InventoryController, InternalInventoryController],
   providers: [{ provide: Store, useClass: DynamoStore }, ProductionService, InventoryService, JwtGuard, InternalGuard, Messaging,Metrics,{provide:APP_INTERCEPTOR,useClass:MetricsInterceptor}],
 })
 export class AppModule {}

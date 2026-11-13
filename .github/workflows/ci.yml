@@ -2,7 +2,8 @@ name: Production CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: ['**']
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -11,20 +12,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: {fetch-depth: 0}
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with: {node-version: 22, cache: npm}
       - run: npm ci --ignore-scripts
+      - run: node --test scripts/*.test.mjs
       - run: npm run typecheck
       - run: npm run test:cov
       - run: npm run build
       - uses: actions/upload-artifact@v4
         with: {name: production-coverage, path: coverage}
+      - name: Require SonarCloud configuration
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          PROJECT: ${{ vars.SONAR_PROJECT_KEY }}
+          ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+        run: test -n "$SONAR_TOKEN" && test -n "$PROJECT" && test -n "$ORGANIZATION"
       - uses: SonarSource/sonarqube-scan-action@v6
         with:
           args: >-
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY || 'christochula_oficina-production-service' }}
-            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION || 'christochula' }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
             -Dsonar.host.url=https://sonarcloud.io
             -Dsonar.qualitygate.wait=true
         env:
